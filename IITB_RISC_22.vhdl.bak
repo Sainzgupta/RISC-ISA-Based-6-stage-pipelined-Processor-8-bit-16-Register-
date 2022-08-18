@@ -1,0 +1,488 @@
+library ieee;
+use ieee.std_logic_1164.all;
+use ieee.numeric_std.all;
+use work.my_pckage.all;
+
+entity IITB_RISC_22 is
+	port (
+    clk	: in  std_logic ;-- data input;
+	--in_current_instruction : std_logic_vector ( 15 downto 0 );
+	--in_control_word : in std_logic_vector ( 31 downto 0 );
+    custom_in : in std_logic; 	--
+    contentA : in std_logic_vector(15 downto 0);	--
+    contentB : in std_logic_vector(15 downto 0)	;--
+	in_pc_reset : in std_logic
+    --pc_incr	: out  std_logic_vector(15 downto 0)  -- data output
+    );
+end IITB_RISC_22;
+
+architecture Behavioral of IITB_RISC_22 is 
+ 
+ signal incremented_pc, pc_out: std_logic_vector(15 downto 0) ;
+ signal pc_in: std_logic_vector(15 downto 0) := ( others => '0' );
+ signal current_instruction:   std_logic_vector(15 downto 0);
+ signal pc_write, pc_reset : std_logic ;
+
+ signal dummy_3 : std_logic_vector ( 2 downto 0 );
+ signal dummy_16 : std_logic_vector ( 15 downto 0 );
+ 
+ signal  IF_regin, IF_regout, ID_regin, ID_regout, EX_regin, EX_regout, MEM_regin, MEM_regout, WB_regin, WB_regout	:  std_logic_vector(300 downto 0);	
+ signal  IF_write, IF_reset, ID_write, ID_reset, EX_write, EX_reset, MEM_write, MEM_reset, WB_write, WB_reset	:  std_logic;
+ 
+ signal regfile_reset, regfile_writEn : std_logic; 
+ signal regfile_readA, regfile_readB, regfile_writAdd : std_logic_vector ( 2 downto 0 );
+ signal regfile_dataA, regfile_dataB, regfile_dataIn : std_logic_vector ( 15 downto 0 );
+ 
+ signal sel_mux_regfile_A1, sel_mux_regfile_A0, sel_mux_regfile_B1, sel_mux_regfile_B0, sel_mux_regfile_Wr1, sel_mux_regfile_Wr0 : std_logic;
+ signal sel_mux_regfile_outA1, sel_mux_regfile_outA0, sel_mux_regfile_outB1, sel_mux_regfile_outB0, sel_mux_WB1, sel_mux_WB0 : std_logic;
+
+ signal alu_control_out : std_logic_vector ( 3 downto 0 ) ;
+ signal ALU_a, ALU_b, alu_result, alu_result_actual: std_logic_vector ( 15 downto 0 );
+ 
+ signal CC_in, CC_out : std_logic_vector ( 1 downto 0 );
+ signal CC_write, CC_reset : std_logic ;
+ 
+ signal datamem_wr, datamem_rd : std_logic;
+ signal datamem_in, datamem_address : std_logic_vector ( 15 downto 0 );
+ 
+ signal mux_WB_out, mux_jmp_result : std_logic_vector ( 15 downto 0 );
+ signal control_word, stall_control_word, control_word_orig, control_word_orig2, control_word_execute, flush_control_word : std_logic_vector ( 38 downto 0 );
+ 
+ signal adder_a, adder_b, adder_result : std_logic_vector ( 15 downto 0 );
+ 
+ signal sel_mux_PC1, sel_mux_PC0, sel_mux_jmp1, sel_mux_jmp0 : std_logic;
+ 
+ signal mux_branch_result : std_logic_vector ( 1 downto 0 );
+ signal sel_mux_branch, sel_mux_signext : std_logic;
+ signal mux_signext_result : std_logic_vector ( 15 downto 0 );
+ 
+ signal address_LM, adder_LM_result, init_Lm_address, new_current_instruction : std_logic_vector ( 15 downto 0 );
+ signal sel_mux_reg_LM1, sel_mux_reg_LM0, sel_mux_memaddress_LM1, sel_mux_memaddress_LM0, count_LM, control0, sel_mux_Hazard_control : std_logic;
+
+ signal count, count_SM, count_jmp, count_brch : integer := -1;
+ signal count_std : std_logic_vector ( 2 downto 0 );
+ 
+ signal result_LHI : std_logic_vector ( 15 downto 0 );
+ signal sel_outA, sel_outB : std_logic_vector ( 1 downto 0 );
+ 
+ signal regwrite_check, memwrite_check, stall_bit, flush_bit, flush_bit_branch, control_jmp, control_brch : std_logic;
+ 
+ 
+begin
+
+-- Instruction Fetch 
+inst_mem : Instruction_Memory port map( pc_out, current_instruction );			--Instruction_Memory
+--current_instruction <= in_current_instruction; 
+IF_regin ( 15 downto 0 ) <= current_instruction; 
+IF_regin ( 165 downto 150 ) <= pc_out;		--
+IF_regin ( 181 downto 166 ) <= incremented_pc;	--  
+IF_pipeline_reg : reg generic map ( 301 ) port map( clk,IF_write, IF_reset, IF_regin, IF_regout); 		--IF Pipeline register
+
+--pc_in <=  ( others => '0' ) when in_pc_reset <= '1';
+PC_reg : reg generic map ( 16 ) port map(clk, pc_write, pc_reset, pc_in, pc_out );	-- 
+PC_inc : pc_increment port map( pc_out, incremented_pc  ); 		--
+mux_PC  : mux4to1 generic map ( 16 ) port map ( incremented_pc, Ex_regout ( 215 downto 200 ) , Ex_regout(47 downto 32), dummy_16, pc_in, sel_mux_PC1, sel_mux_PC0 );	--adder result on 2
+--pc_write <= '1'; 
+			--when in_pc_reset = '1' 	-- Not included in control word
+			--else '1';
+pc_reset <= in_pc_reset; --when in_pc_reset = '1'
+				--else '0';
+
+	with EX_regout(126) select
+	sel_mux_PC1 <= '0' when '0',
+				   '1' when '1',
+				   '0' when others;
+
+	with EX_regout(127) select	
+	sel_mux_PC0 <= '0' when '0',
+				   '1' when '1',
+				   '0' when others;
+
+				   
+-- End Instruction Fetch 
+
+
+
+-- Decode stage
+ID_regin ( 15 downto 0 ) <= IF_regout ( 15 downto 0 );
+ID_pipeline_reg : reg generic map ( 301 ) port map(clk, ID_write, ID_reset, ID_regin, ID_regout  ); 		--ID Pipeline register
+
+
+Reg_file : regfile_test  port map( custom_in, contentA, contentB, pc_out, clk, regfile_reset, regfile_readA, regfile_readB, regfile_dataA, regfile_dataB, regfile_dataIn, regfile_writEn, regfile_writAdd );	-- Register file 
+
+mux_regfile_A  : mux4to1 generic map ( 3 ) port map ( IF_regout ( 11 downto 9 ), IF_regout ( 8 downto 6 ) , dummy_3, dummy_3, regfile_readA, sel_mux_regfile_A1, sel_mux_regfile_A0 );	-- MUX
+mux_regfile_B  : mux4to1 generic map ( 3 ) port map ( IF_regout ( 8 downto 6 ), IF_regout ( 11 downto 9 ) , count_std, dummy_3, regfile_readB, sel_mux_regfile_B1, sel_mux_regfile_B0 );
+--mux_regfile_Wr  : mux4to1 generic map ( 3 ) port map ( EX_regout ( 5 downto 3 ), EX_regout( 8 downto 6 ), EX_regout ( 11 downto 9 ), dummy_3, regfile_writAdd, sel_mux_regfile_Wr1, sel_mux_regfile_Wr0 );
+mux_regfile_Wr  : mux4to1 generic map ( 3 ) port map ( MEM_regout ( 5 downto 3 ), MEM_regout( 8 downto 6 ), MEM_regout ( 11 downto 9 ), MEM_regout(234 downto 232 ), regfile_writAdd, sel_mux_regfile_Wr1, sel_mux_regfile_Wr0 );
+
+ALUcontrol  : alu_control  port map ( IF_regout ( 15 downto 12 ), IF_regout ( 2 downto 0 ) , alu_control_out );
+
+sign_ext6  : sign_extend  generic map(6) port map ( IF_regout ( 5 downto 0 ), ID_regin ( 98 downto 83 ) );
+
+sign_ext9  : sign_extend  generic map(9) port map ( IF_regout ( 8 downto 0 ), ID_regin ( 197 downto 182 ) );	--
+
+
+ID_regin(31 downto 16) <= regfile_dataA;
+ID_regin(47 downto 32) <= regfile_dataB;
+ID_regin(51 downto 48) <= alu_control_out;
+ID_regin(138 downto 100) <= control_word;
+ID_regin(15 downto 0) <= IF_regout ( 15 downto 0 );
+ID_regin ( 165 downto 150 ) <= IF_regout ( 165 downto 150 ); 	--pc
+ID_regin ( 181 downto 166 ) <= IF_regout ( 181 downto 166  ); 	--incremented_pc
+ 
+--process ( clk, in_control_word, control_word )
+--begin
+	--if ( clk'event and clk='1' ) then 
+		Control_component  : control_block  port map ( IF_regout ( 15 downto 0 ), count, CC_in(1), CC_in(0), control_word_orig );
+	--end if;
+
+--IF_write <= '1';  
+IF_reset <= '0'; --IF_write <= control_word(0);  IF_reset <= control_word(1); 
+
+	with control_word(0) select
+	IF_write <= '0' when '0',
+				   '1' when '1',
+				   '1' when others;
+				   
+ID_write <= control_word(2);  --IF_reset <= control_word(3); 
+EX_write <= control_word(4);  EX_reset <= control_word(5);
+MEM_write <= control_word(6);  MEM_reset <= control_word(7);
+
+--regfile_writEn <= control_word(8);  
+regfile_reset <= control_word(9);
+
+sel_mux_regfile_A1 <= control_word(10);  sel_mux_regfile_A0 <= control_word(11);
+sel_mux_regfile_B1 <= control_word(12);  sel_mux_regfile_B0 <= control_word(13);
+--sel_mux_regfile_Wr1 <= control_word(14);  sel_mux_regfile_Wr0 <= control_word(15);
+
+--sel_mux_regfile_outA1 <= control_word(16);  sel_mux_regfile_outA0 <= control_word(17);
+--sel_mux_regfile_outB1 <= control_word(18);  sel_mux_regfile_outB0 <= control_word(19);
+
+--CC_write <= control_word(20);  CC_reset	<= control_word(21);
+
+--datamem_wr <= control_word(22);  datamem_rd	<= control_word(23);
+
+--sel_mux_WB1 <= control_word(24);  sel_mux_WB0 <= control_word(25);
+--end process;
+
+
+--ID_regin( 231 downto 216 ) <= regfile_dataA;
+
+regwrite_check <= control_word (8); 
+memwrite_check <= control_word (22);
+
+Hazarding_unit :  hazard_detection  port map ( ID_regout ( 15 downto 12 ), ID_regout ( 11 downto 9 ), IF_regout ( 11 downto 9 ), IF_regout ( 8 downto 6 ), sel_mux_Hazard_control ); 
+
+mux_Hazard_control  : mux2to1 generic map ( 39 ) port map ( control_word_orig, stall_control_word, control_word_orig2, sel_mux_Hazard_control );
+stall_control_word <= "010000000000000000000000000000001010100";
+stall_bit <= control_word(37);
+ID_regin(284) <= sel_mux_Hazard_control;
+EX_regin(284) <= ID_regout(284);
+
+
+mux_control  : mux2to1 generic map ( 39 ) port map ( control_word_orig2, flush_control_word, control_word, flush_bit );
+flush_control_word <= "001000000000000000000000000000001010101";
+
+flush_bit <= '1' when ( count_jmp /= -1 ) 
+	else '0';
+	
+
+Control_jmp_process : process( new_current_instruction )
+variable opcode : std_logic_vector ( 3 downto 0 );
+begin
+	
+	opcode := new_current_instruction( 15 downto 12 );
+	if ( opcode = "1001" or opcode = "1010" or opcode = "1011" ) then
+		control_jmp <= '1';
+	else
+		control_jmp <= '0';
+	end if;
+
+end process Control_jmp_process;
+
+Count_jmp_process : process(clk)
+begin
+	if (rising_edge(clk)) then
+		if ( count_jmp = 2 ) then
+			count_jmp <= -1;	
+		elsif ( control_jmp = '1' or flush_bit = '1' ) then
+			count_jmp <= count_jmp + 1; 	
+		end if;
+	end if;
+end process Count_jmp_process;
+
+-- End Decode Stage
+
+
+
+
+-- Execute stage
+mux_regfile_outA  : mux4to1 generic map ( 16 ) port map ( ID_regout(31 downto 16), MEM_regout ( 83 downto 68 ), alu_result_actual, MEM_regout(67 downto 52), ALU_a, sel_mux_regfile_outA1, sel_mux_regfile_outA0 );
+mux_regfile_outB  : mux4to1 generic map ( 16 ) port map ( ID_regout(47 downto 32), ID_regout ( 98 downto 83 ) , alu_result_actual, MEM_regout(67 downto 52), ALU_b, sel_mux_regfile_outB1, sel_mux_regfile_outB0 );
+--sel_mux_regfile_outA1 <= ID_regout(116);  
+--sel_mux_regfile_outA0 <= ID_regout(117)	or EX_regout(284);
+--	with ( ID_regout(117) or EX_regout(284) ) select
+--	sel_mux_regfile_outA0 <= '0' when '0',
+--							 '1' when '1',
+--							 '0' when others;
+--sel_mux_regfile_outB1 <= ID_regout(118);  sel_mux_regfile_outB0 <= ID_regout(119);
+
+sel_mux_regfile_outA : process ( EX_regout(284), sel_outA )
+begin
+		if( EX_regout(284) = '1') then
+			sel_mux_regfile_outA1 <= '0'; sel_mux_regfile_outA0 <= '1';
+		elsif ( sel_outA = "10" ) then
+			sel_mux_regfile_outA1 <= '1'; sel_mux_regfile_outA0 <= '0';
+		elsif ( sel_outA = "11" ) then
+			sel_mux_regfile_outA1 <= '1'; sel_mux_regfile_outA0 <= '1';
+		else
+			sel_mux_regfile_outA1 <= '0'; sel_mux_regfile_outA0 <= '0';
+		end if;
+end process;
+
+sel_mux_regfile_outB : process ( ID_regout(118), ID_regout(119), sel_outB )
+begin
+		if( ID_regout(118) = '0' and ID_regout(119) = '1' ) then
+			sel_mux_regfile_outB1 <= '0'; sel_mux_regfile_outB0 <= '1';
+		elsif ( sel_outB = "10" ) then
+			sel_mux_regfile_outB1 <= '1'; sel_mux_regfile_outB0 <= '0';
+		elsif ( sel_outB = "11" ) then
+			sel_mux_regfile_outB1 <= '1'; sel_mux_regfile_outB0 <= '1';
+		else
+			sel_mux_regfile_outB1 <= '0'; sel_mux_regfile_outB0 <= '0';
+		end if;
+end process;
+
+ALUmain  : alu_main   port map ( ALU_a, ALU_b , ID_regout(51 downto 48), alu_result, CC_out(1), CC_in(1), CC_out(0), CC_in(0) );
+
+Condition_code_register : reg generic map ( 2 ) port map(clk, CC_write, CC_reset,  CC_in, CC_out); 
+CC_write <= ID_regout(120);  CC_reset	<= ID_regout(121);
+
+EX_regin( 47 downto 32 )  <= ID_regout( 47 downto 32 );
+EX_regin( 67 downto 52 )  <= alu_result ;
+--EX_regin(125 downto 100) <= ID_regout(125 downto 100);	-- control word
+--EX_regin(138 downto 128) <= ID_regout(138 downto 128);	-- control word
+--EX_regin(127 downto 126) <= mux_branch_result; -- control word
+
+control_word_execute (25 downto 0) <= ID_regout(125 downto 100);
+control_word_execute(38 downto 28) <= ID_regout(138 downto 128);
+control_word_execute(27 downto 26) <= mux_branch_result;
+
+
+EX_regin(15 downto 0) <= ID_regout ( 15 downto 0 );
+EX_regin ( 181 downto 166 ) <= ID_regout ( 181 downto 166  );  
+Ex_pipeline_reg : reg generic map ( 301 ) port map(clk, EX_write, EX_reset, EX_regin, EX_regout); 		--EX Pipeline register
+
+mux_jmp  : mux4to1 generic map ( 16 ) port map ( ID_regout ( 165 downto 150 ), ID_regout(31 downto 16), dummy_16, dummy_16, mux_jmp_result, sel_mux_jmp1, sel_mux_jmp0 );
+sel_mux_jmp1 <= ID_regout(128); sel_mux_jmp0 <= ID_regout(129);
+
+mux_signext  : mux2to1 generic map ( 16 ) port map ( ID_regout ( 197 downto 182 ), ID_regout ( 98 downto 83 ), mux_signext_result, sel_mux_signext );
+
+adder_a <= mux_jmp_result;
+adder_b <= mux_signext_result;
+adder_jmp  : adder   generic map ( 16 ) port map ( adder_a, adder_b , adder_result );
+EX_regin ( 215 downto 200 ) <= adder_result;  
+--sel_mux_PC1 <= ID_regout(126);  sel_mux_PC0 <= ID_regout(127);
+
+mux_branch  : mux2to1 generic map ( 2 ) port map ( ID_regout ( 127 downto 126 ), "10", mux_branch_result, sel_mux_branch );
+sel_mux_branch <= ID_regout(130) and CC_in(0);
+sel_mux_signext <= ID_regout(131);
+
+adder_LM  : adder   generic map ( 16 ) port map ( address_LM, X"0001" , adder_LM_result ); 
+address_LM <= ID_regout( 231 downto 216 );
+init_Lm_address <= ID_regin( 231 downto 216 );
+--ID_regin( 231 downto 216 ) <= adder_LM_result;
+
+mux_reg_LM  : mux4to1 generic map ( 16 ) port map ( regfile_dataA, adder_LM_result, dummy_16, dummy_16, ID_regin( 231 downto 216 ), sel_mux_reg_LM1,  sel_mux_reg_LM0 );
+--sel_mux_reg_LM1 <= ID_regout( 132 );	sel_mux_reg_LM0 <= ID_regout( 133 );
+
+	with ID_regout( 132 ) select
+	sel_mux_reg_LM1 <= '0' when '0',
+				   '1' when '1',
+				   '0' when others;
+
+	with ID_regout( 133 )select	
+	sel_mux_reg_LM0 <= '0' when '0',
+				   '1' when '1',
+				   '0' when others;
+
+EX_regin(231 downto 216 ) <= address_LM;
+EX_regin(234 downto 232 ) <= std_logic_vector(to_unsigned(count, 3));
+count_SM <= count + 1;
+count_std <= std_logic_vector(to_unsigned(count_SM, 3));
+
+--count <= count + 1 when  ( ID_regout( 138 ) = '1' and count = 0 );	--std_logic_vector(to_unsigned(K, N)) to_integer(unsigned(X))
+
+--Reset_count : if ( count = 8 ) generate  
+--count <= 0;
+--end generate; 
+
+Count_process : process(clk)
+begin
+	if (rising_edge(clk)) then
+		if ( count = 6 ) then
+			count <= -1;	
+		elsif ( control_word( 38 ) = '1') then
+			count <= count + 1; 	
+		end if;
+	end if;
+end process Count_process;
+
+pc_write <= '0'	when  ( ( control_word( 38 ) = '1' ) or ( control_word ( 37 ) = '1' ) )--and count /= 1 )	-- ID_regout( 138 )
+		else '1';
+
+count_LM <= ID_regout( 138 );
+new_current_instruction <= IF_regout ( 15 downto 0 );	
+control0 <= ID_regout ( 100 );
+
+LHI_block  : load_higher_immediate port map ( ID_regout ( 15 downto 0 ) , result_LHI );
+EX_regin ( 300 downto 285 ) <= result_LHI;
+
+Forward_unit : forwarding_unit port map ( EX_regout( 15 downto 12 ), MEM_regout( 15 downto 12 ), EX_regout( 5 downto 3 ), MEM_regout( 5 downto 3 ), ID_regout( 11 downto 9 ), ID_regout( 8 downto 6 ), sel_outA, sel_outB );
+
+
+
+mux_branch_flush  : mux2to1 generic map ( 39 ) port map ( control_word_execute, flush_control_word, EX_regin(138 downto 100), flush_bit_branch );
+--flush_control_word <= "001000000000000000000000000000001010101";
+
+flush_bit_branch <= '1' when ( count_brch /= -1 ) 
+	else '0';
+	
+
+Control_brch_process : process( ID_regout ( 15 downto 0 ), CC_in )
+variable opcode : std_logic_vector ( 3 downto 0 );
+begin
+	
+	opcode := ID_regout ( 15 downto 12 );
+	if ( opcode = "1000" and CC_in(0) = '1' ) then
+		control_brch <= '1';
+	else
+		control_brch <= '0';
+	end if;
+
+end process Control_brch_process;
+
+Count_brch_process : process(clk)
+begin
+	if (rising_edge(clk)) then
+		if ( count_brch = 2 ) then
+			count_brch <= -1;	
+		elsif ( control_brch = '1' or flush_bit_branch = '1' ) then
+			count_brch <= count_brch + 1; 	
+		end if;
+	end if;
+end process Count_brch_process;
+
+-- End Execute Stage
+
+
+
+
+-- Memory stage
+Data_mem  : data_memory    port map ( clk, datamem_wr , datamem_rd, datamem_address, datamem_in, MEM_regin ( 83 downto 68 ) );
+
+MEM_pipeline_reg : reg generic map ( 301 ) port map(clk, MEM_write, MEM_reset, MEM_regin, MEM_regout); 	-- MEM Pipeline register
+MEM_regin(138 downto 100) <= EX_regout(138 downto 100);
+MEM_regin(15 downto 0) <= EX_regout ( 15 downto 0 );
+MEM_regin(67 downto 52) <= EX_regout ( 67 downto 52 );
+MEM_regin ( 181 downto 166 ) <= EX_regout ( 181 downto 166  );  
+MEM_regin( 300 downto 285 ) <= EX_regout( 300 downto 285 );
+MEM_regin( 234 downto 232 ) <= EX_regout( 234 downto 232 );
+alu_result_actual <= EX_regout( 67 downto 52 );
+datamem_wr <= EX_regout(122);  datamem_rd	<= EX_regout(123);	datamem_in <= EX_regout( 47 downto 32 ); --datamem_address <= alu_result_actual;
+
+mux_memaddress_LM  : mux4to1 generic map ( 16 ) port map ( alu_result_actual, EX_regout(231 downto 216 ) , dummy_16, dummy_16, datamem_address, sel_mux_memaddress_LM1, sel_mux_memaddress_LM0 );
+sel_mux_memaddress_LM1 <= ID_regout( 134 );		sel_mux_memaddress_LM0 <= ID_regout( 135 );
+
+--mux_memdata_LM  : mux4to1 generic map ( 16 ) port map ( EX_regout( 47 downto 32 ), EX_regout(231 downto 216 ) , dummy_16, dummy_16, datamem_in, sel_mux_memdata_LM1, sel_mux_memdata_LM0);
+--sel_mux_memdata_LM1 <= ID_regout( 136 );		sel_mux_memdata_LM0 <= ID_regout( 137 );
+
+--regfile_writEn <= EX_regout(108);
+--regfile_writAdd <= EX_regout ( 5 downto 3 );
+-- End Memory Stage
+
+
+
+
+--WB stage 
+--WB_pipeline_reg : reg generic map ( 201 ) port map( WB_regin, WB_regout, clk, WB_write, WB_reset  ); 	-- WB Pipeline register
+mux_WB  : mux4to1 generic map ( 16 ) port map ( MEM_regout( 67 downto 52 ), MEM_regout ( 83 downto 68 ), MEM_regout ( 181 downto 166 ), MEM_regout( 300 downto 285 ), mux_WB_out , sel_mux_WB1, sel_mux_WB0 );
+sel_mux_WB1 <= MEM_regout(124);  sel_mux_WB0 <= MEM_regout(125);
+regfile_writEn <= MEM_regout(108);
+--regfile_writAdd <= MEM_regout ( 5 downto 3 );
+regfile_dataIn <=  mux_WB_out;
+sel_mux_regfile_Wr1 <= MEM_regout(114);  sel_mux_regfile_Wr0 <= MEM_regout(115);
+-- End WB stage
+
+
+end architecture;
+
+
+
+
+library ieee;
+use ieee.std_logic_1164.all;
+use ieee.numeric_std.all;
+
+entity main_tb is end entity;
+
+architecture stim of main_tb is 
+component main is
+	port (
+    clk	: in  std_logic ;-- data input;
+	--in_current_instruction : std_logic_vector ( 15 downto 0 );
+	--in_control_word : in std_logic_vector ( 31 downto 0 );
+    custom_in : in std_logic; 	--
+    contentA : in std_logic_vector(15 downto 0);	--
+    contentB : in std_logic_vector(15 downto 0);	--
+	in_pc_reset : in std_logic
+    --pc_incr	: out  std_logic_vector(15 downto 0)  -- data output
+    );
+end component main;
+signal t_clk, t_in_pc_reset : std_logic;
+--signal t_in_current_instruction : std_logic_vector ( 15 downto 0 );
+--signal t_in_control_word :  std_logic_vector ( 31 downto 0 );
+signal t_custom_in :  std_logic; 	--
+signal t_contentA :  std_logic_vector(15 downto 0);	--
+signal t_contentB :  std_logic_vector(15 downto 0);	--
+begin
+
+	dut : main port map ( t_clk, t_custom_in, t_contentA, t_contentB, t_in_pc_reset );
+	
+	clk : process 
+	begin
+	t_clk <= '0';
+	for i in 0 to 200 loop
+		
+		wait for 50ps;
+		t_clk <= not t_clk;
+		wait for 50ps;
+		t_clk <= not t_clk;	
+		
+	end loop;
+	wait;
+	end process;
+	
+	go : process 
+	begin
+	
+
+	--t_custom_in <= '1'; t_contentA <= "0000000000001010"; t_contentB <= "0000000000001011";   wait for 100ps;
+	t_custom_in <= '1'; t_in_pc_reset <= '1';  wait for 100ps; 
+	t_custom_in <= '0'; t_in_pc_reset <= '0'; wait for 100ps;
+	--t_in_current_instruction <= "0001100101110010"; wait for 100ps; 
+	--t_in_current_instruction <= "0001001010011001"; wait for 100ps; 
+	--t_in_current_instruction <= "0001100101110011"; wait for 100ps; 	
+	--t_in_pc_reset <= '0'; --t_in_current_instruction <= "0001001010011000"; 
+	--wait for 100ps;--t_in_control_word <= "11000000000000000000000001010101"; -- t_in_pc_reset <= '0';
+	--t_custom_in <= '0'; t_in_current_instruction <= "0001100101110010";  wait for 100ps; -- t_in_control_word <= "000000000100000000000101010101"; 
+	--t_custom_in <= '0'; t_in_current_instruction <= "0001001010011001";  wait for 100ps; -- t_in_control_word <= "000000000100000000000101010101"; 
+	--t_custom_in <= '0'; t_in_current_instruction <= "0001100101110011";  wait for 100ps; -- t_in_control_word <= "000000000100000000000101010101"; --wait for 100ps;
+	--t_go <= '0' ; wait for 10ps;
+
+	
+	wait;
+	end process;
+
+end architecture;
+
